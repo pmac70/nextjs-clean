@@ -86,7 +86,14 @@ export async function POST(request) {
         error: 'Failed to submit assessment',
         details: error.message 
       },
-      { status: 500 }
+      { 
+        status: 500,
+        headers: {
+          'Access-Control-Allow-Origin': 'https://app.anima-animus.co.uk',
+          'Access-Control-Allow-Methods': 'POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type',
+        }
+      }
     );
   }
 }
