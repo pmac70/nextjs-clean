@@ -34,20 +34,15 @@ export async function POST(request) {
       source: 'Menopause Assessment Form',
       tags: ['assessment-complete']
     };
-    const ghlResponse = await fetch('https://services.leadconnectorhq.com/forms/submit', {
+    const zapierResponse = await fetch('https://hooks.zapier.com/hooks/catch/123456/abcdef/', { // Replace with your Zapier webhook URL
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://app.anima-animus.co.uk',
-        'Origin': 'https://app.anima-animus.co.uk'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(formData),
     });
-    const responseBody = await ghlResponse.text();
-    console.log('GHL Status:', ghlResponse.status, 'Body:', responseBody);
-    if (!ghlResponse.ok) {
-      throw new Error(`GHL submission failed: ${responseBody}`);
+    const zapBody = await zapierResponse.text();
+    console.log('Zapier Status:', zapierResponse.status, 'Body:', zapBody);
+    if (!zapierResponse.ok) {
+      throw new Error(`Zapier submission failed: ${zapBody}`);
     }
     return NextResponse.json({ success: true }, { headers: corsHeaders });
   } catch (error) {
