@@ -5,7 +5,7 @@ const GHL_API_KEY = process.env.GHL_API_KEY;
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
 const BASE = "https://rest.gohighlevel.com/v1";
 
-/** Unified fetch helper for GHL REST */
+/** Unified GHL fetch helper */
 async function ghl(path, init = {}) {
   const headers = {
     Authorization: `Bearer ${GHL_API_KEY}`,
@@ -24,7 +24,7 @@ async function ghl(path, init = {}) {
   return { ok: res.ok, status: res.status, data, raw: text };
 }
 
-/** Health check: visit /api/submit */
+/** Health check */
 export async function GET() {
   return NextResponse.json({
     ok: true,
@@ -33,7 +33,7 @@ export async function GET() {
   });
 }
 
-/** Table + note formatter */
+/** Helpers to format a single big Note */
 function toMarkdownTable(obj) {
   const lines = ["| Field | Value |", "|------:|:------|"];
   for (const [k, v] of Object.entries(obj || {})) {
@@ -45,7 +45,7 @@ function toMarkdownTable(obj) {
 }
 function formatNote(all) {
   const header = [
-    "📌 **New Questionnaire Submission**",
+    "📌 **Questionnaire Submission**",
     "",
     `**Name:** ${[all.firstName, all.lastName].filter(Boolean).join(" ")}`,
     all.email ? `**Email:** ${all.email}` : "",
@@ -59,65 +59,72 @@ function formatNote(all) {
   return `${header}\n${toMarkdownTable(all)}`;
 }
 
-/** Try to find an existing contact by email/phone; return contactId or null */
+/** Only keep keys with real values (don’t send blanks on update) */
+function pickNonEmpty(obj, allowedKeys) {
+  const out = {};
+  for (const k of allowedKeys) {
+    const v = obj[k];
+    if (v !== undefined && v !== null && String(v).trim() !== "") {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+/** Try to find an existing contact by email/phone */
 async function findContactId({ email, phone }) {
   const params = new URLSearchParams();
   if (email) params.append("email", email);
   if (phone) params.append("phone", phone);
   if (!params.toString()) return null;
 
-  const { ok, data, status, raw } = await ghl(`/contacts/lookup?${params.toString()}`, {
-    method: "GET",
-  });
-  if (!ok) {
-    console.error("Lookup failed", status, raw);
+  const r = await ghl(`/contacts/lookup?${params.toString()}`, { method: "GET" });
+  if (!r.ok) {
+    console.error("Lookup failed", r.status, r.raw);
     return null;
   }
-  // GHL returns { contact: { id, ... } } or sometimes { id } or array
-  return data?.contact?.id || data?.id || data?.contacts?.[0]?.id || null;
+  return r.data?.contact?.id || r.data?.id || r.data?.contacts?.[0]?.id || null;
 }
 
 export async function POST(request) {
   try {
     const payload = await request.json();
 
-    // 1) Lookup existing contact by email/phone
+    // 1) Lookup by email/phone (can also add externalId if you capture FB lead id)
     const existingId = await findContactId({
       email: payload.email,
       phone: payload.phone,
     });
 
-    // 2) Build shared fields
-    const common = {
-      firstName: payload.firstName ?? "",
-      lastName: payload.lastName ?? "",
-      email: payload.email ?? "",
-      phone: payload.phone ?? "",
-    };
+    // Allowed top-level contact fields you want to maintain
+    const allowed = ["firstName", "lastName", "email", "phone"];
+    const nonEmpty = pickNonEmpty(payload, allowed);
 
     let contactId;
 
     if (existingId) {
-      // 3a) UPDATE existing contact
-      const upd = await ghl(`/contacts/${existingId}`, {
-        method: "PUT",
-        body: JSON.stringify(common),
-      });
-      if (!upd.ok) {
-        console.error("Update contact error", upd.status, upd.raw);
-        return NextResponse.json(
-          { success: false, step: "update", status: upd.status, error: upd.data },
-          { status: 502 }
-        );
+      // 2a) UPDATE only with the non-empty fields we received
+      if (Object.keys(nonEmpty).length > 0) {
+        const upd = await ghl(`/contacts/${existingId}`, {
+          method: "PUT",
+          body: JSON.stringify(nonEmpty),
+        });
+        if (!upd.ok) {
+          console.error("Update contact error", upd.status, upd.raw);
+          return NextResponse.json(
+            { success: false, step: "update", status: upd.status, error: upd.data },
+            { status: 502 }
+          );
+        }
       }
       contactId = existingId;
     } else {
-      // 3b) CREATE new contact
+      // 2b) CREATE (require locationId)
       const crt = await ghl(`/contacts/`, {
         method: "POST",
         body: JSON.stringify({
           locationId: GHL_LOCATION_ID,
-          ...common,
+          ...nonEmpty,
         }),
       });
       if (!crt.ok || !crt.data?.id) {
@@ -130,15 +137,13 @@ export async function POST(request) {
       contactId = crt.data.id;
     }
 
-    // 4) Add ONE big note with all fields
+    // 3) Add a single big Note with ALL Q&A
     const note = await ghl(`/contacts/${contactId}/notes/`, {
       method: "POST",
       body: JSON.stringify({ body: formatNote(payload) }),
     });
-
     if (!note.ok) {
       console.error("Note error", note.status, note.raw);
-      // still return success for the contact but bubble the note warning
       return NextResponse.json({
         success: true,
         contactId,
@@ -146,6 +151,9 @@ export async function POST(request) {
         noteStatus: note.status,
       });
     }
+
+    // (Optional) Tag the contact so you can build automations off it:
+    // await ghl(`/contacts/${contactId}/tags/`, { method: "POST", body: JSON.stringify({ tags: ["Questionnaire Submitted"] }) });
 
     return NextResponse.json({ success: true, contactId });
   } catch (err) {
