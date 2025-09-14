@@ -1,13 +1,12 @@
 import { NextResponse } from 'next/server';
 
-// CORS headers for GoHighLevel integration
+// CORS headers
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
-// Handle preflight requests
 export async function OPTIONS(request) {
   return new Response(null, {
     status: 200,
@@ -28,18 +27,17 @@ export async function POST(request) {
       );
     }
 
-    // Create/Update contact in GoHighLevel
-    const ghlResult = await createGHLContact(data);
+    // Submit to GHL form
+    const ghlResult = await submitToGHLForm(data);
     
     if (!ghlResult.success) {
-      throw new Error(`GHL API Error: ${ghlResult.error}`);
+      throw new Error(`GHL Form Error: ${ghlResult.error}`);
     }
 
     return NextResponse.json(
       { 
         success: true, 
-        message: 'Assessment data sent to GoHighLevel successfully',
-        contactId: ghlResult.contactId 
+        message: 'Assessment data sent to GoHighLevel successfully'
       },
       { status: 200, headers: corsHeaders }
     );
@@ -53,69 +51,48 @@ export async function POST(request) {
   }
 }
 
-async function createGHLContact(data) {
+async function submitToGHLForm(data) {
   try {
-    // Your GHL API credentials - set these in Vercel environment variables
-    const GHL_API_KEY = process.env.GHL_API_KEY;
-    const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
+    // Your specific GHL form URL
+    const GHL_FORM_URL = 'https://api.leadconnectorhq.com/widget/form/CZ3h3Go42EQ6rgs4BHS6?notrack=true';
 
-    if (!GHL_API_KEY || !GHL_LOCATION_ID) {
-      throw new Error('GHL API credentials not configured');
-    }
+    // Format the complete assessment as text for the form
+    const completeAssessment = formatCompleteAssessment(data);
 
-    const contactData = {
-      firstName: data.first_name || '',
-      lastName: data.last_name || '',
-      email: data.email,
-      phone: data.phone,
-      source: 'Comprehensive Menopause Assessment',
-      tags: data.tags || [],
-      // Store all assessment data in notes
-      notes: formatDetailedNote(data)
-    };
+    // Create form data for GHL form submission
+    const formData = new URLSearchParams({
+      'first_name': data.first_name || '',
+      'last_name': data.last_name || '',
+      'email': data.email,
+      'phone': data.phone,
+      'assessment_data': completeAssessment
+    });
 
-    // Add custom fields if you have any configured in GHL
-    if (data.assessment_type) {
-      contactData.customFields = [
-        {
-          key: 'assessment_type',
-          value: data.assessment_type
-        },
-        {
-          key: 'completion_date', 
-          value: data.completion_date
-        }
-      ];
-    }
+    console.log('Submitting to GHL form:', GHL_FORM_URL);
 
-    const response = await fetch(`https://services.leadconnectorhq.com/contacts/`, {
+    const response = await fetch(GHL_FORM_URL, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${GHL_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Version': '2021-07-28'
+        'Content-Type': 'application/x-www-form-urlencoded',
       },
-      body: JSON.stringify({
-        locationId: GHL_LOCATION_ID,
-        ...contactData
-      })
+      body: formData.toString()
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      throw new Error(`GHL API responded with ${response.status}: ${errorData}`);
+      throw new Error(`Form submission failed with ${response.status}: ${errorData}`);
     }
 
-    const result = await response.json();
-    console.log('GHL Contact created/updated:', result.contact?.id);
+    const result = await response.text();
+    console.log('GHL form submission response:', result);
 
     return {
       success: true,
-      contactId: result.contact?.id
+      response: result
     };
 
   } catch (error) {
-    console.error('GHL API Error:', error);
+    console.error('GHL Form Submission Error:', error);
     return {
       success: false,
       error: error.message
@@ -123,55 +100,74 @@ async function createGHLContact(data) {
   }
 }
 
-function formatDetailedNote(data) {
-  let noteContent = `COMPREHENSIVE MENOPAUSE HEALTH ASSESSMENT - ${new Date().toLocaleDateString()}\n`;
-  noteContent += `================================================================\n`;
-  noteContent += `CLIENT: ${data.first_name || ''} ${data.last_name || ''}\n`;
-  noteContent += `EMAIL: ${data.email || 'Not provided'}\n`;
-  noteContent += `PHONE: ${data.phone || 'Not provided'}\n\n`;
+function formatCompleteAssessment(data) {
+  let assessment = `COMPREHENSIVE MENOPAUSE HEALTH ASSESSMENT - ${new Date().toLocaleDateString()}\n`;
+  assessment += `================================================================\n\n`;
   
-  noteContent += `ASSESSMENT SUMMARY:\n`;
-  noteContent += `• Total Symptoms Reported: ${data.total_symptoms || 0}\n`;
-  noteContent += `• High Priority Symptoms (7-10): ${data.high_priority_symptoms || 0}\n\n`;
+  assessment += `ASSESSMENT SUMMARY:\n`;
+  assessment += `• Total Symptoms Reported: ${data.total_symptoms || 0}\n`;
+  assessment += `• High Priority Symptoms (7-10): ${data.high_priority_symptoms || 0}\n\n`;
   
   if (data.experienced_symptoms) {
-    noteContent += `EXPERIENCED SYMPTOMS:\n${data.experienced_symptoms}\n\n`;
+    assessment += `EXPERIENCED SYMPTOMS:\n${data.experienced_symptoms}\n\n`;
   }
   
   if (data.symptom_severities) {
-    noteContent += `SYMPTOM SEVERITIES:\n${data.symptom_severities}\n\n`;
+    assessment += `DETAILED SYMPTOM SEVERITIES:\n${data.symptom_severities}\n\n`;
   }
   
-  noteContent += `PHYSICAL PROFILE:\n`;
-  noteContent += `• Measurement System: ${data.measurement_system || 'Not specified'}\n`;
-  noteContent += `• Weight: ${data.weight || 'Not provided'}\n`;
-  noteContent += `• Height: ${data.height || 'Not provided'}\n`;
-  noteContent += `• Waist: ${data.waist_circumference || 'Not provided'}\n\n`;
+  assessment += `PHYSICAL PROFILE:\n`;
+  assessment += `• Measurement System: ${data.measurement_system || 'Not specified'}\n`;
+  assessment += `• Weight: ${data.weight || 'Not provided'}\n`;
+  assessment += `• Height: ${data.height || 'Not provided'}\n`;
+  assessment += `• Waist Circumference: ${data.waist_circumference || 'Not provided'}\n\n`;
   
-  noteContent += `LIFESTYLE FACTORS:\n`;
-  noteContent += `• Stress Level: ${data.stress_level || 'Not rated'}/6\n`;
-  noteContent += `• Sleep Hours: ${data.sleep_hours || 'Not provided'}\n`;
-  noteContent += `• Exercise Routine: ${data.exercise_routine || 'Not provided'}\n`;
-  noteContent += `• Diet Type: ${data.diet_type || 'Not specified'}\n\n`;
+  assessment += `LIFESTYLE FACTORS:\n`;
+  assessment += `• Stress Level: ${data.stress_level || 'Not rated'}/6\n`;
+  assessment += `• Sleep Hours: ${data.sleep_hours || 'Not provided'} hours\n`;
+  assessment += `• Exercise Routine: ${data.exercise_routine || 'Not provided'}\n`;
+  assessment += `• Diet Type: ${data.diet_type || 'Not specified'}\n\n`;
   
-  noteContent += `MEDICAL HISTORY:\n`;
-  noteContent += `• Medical Conditions: ${data.diagnosed_conditions || 'None reported'}\n`;
-  noteContent += `• Hormone Therapy: ${data.taking_hrt || 'Not specified'}\n`;
-  noteContent += `• Supplements: ${data.taking_supplements || 'None reported'}\n\n`;
+  assessment += `MEDICAL HISTORY:\n`;
+  assessment += `• Medical Conditions: ${data.diagnosed_conditions || 'None reported'}\n`;
+  assessment += `• Hormone Therapy Status: ${data.taking_hrt || 'Not specified'}\n`;
+  assessment += `• Supplements: ${data.taking_supplements || 'None reported'}\n`;
+  assessment += `• Last Period: ${data.had_period_last_12_months || 'Not specified'}\n\n`;
   
-  noteContent += `WELLNESS GOALS:\n`;
-  noteContent += `• Health Priorities: ${data.health_priorities_all || 'Not specified'}\n`;
-  noteContent += `• Top Six Priorities: ${data.top_six_priorities || 'Not specified'}\n`;
-  noteContent += `• Self-Care Options Taken: ${data.self_care_options_taken || 'Not specified'}\n\n`;
+  assessment += `WELLNESS GOALS & PRIORITIES:\n`;
+  assessment += `• Current Health Priorities: ${data.health_priorities_all || 'Not specified'}\n`;
+  assessment += `• Top Six Priorities: ${data.top_six_priorities || 'Not specified'}\n`;
+  assessment += `• Self-Care Approach: ${data.prioritize_self_care || 'Not specified'}\n`;
+  assessment += `• Journey Stage: ${data.menopause_journey_stage || 'Not specified'}\n`;
+  assessment += `• Care Plan Structure Preference: ${data.care_plan_structure || 'Not specified'}\n`;
+  assessment += `• Options Already Taken: ${data.self_care_options_taken || 'Not specified'}\n\n`;
   
-  noteContent += `================================================================\n`;
-  noteContent += `Assessment completed via online questionnaire.\n`;
-  noteContent += `Data consent provided: ${data.raw_assessment_data ? 'Yes' : 'No'}\n`;
+  assessment += `DIETARY & NUTRITION:\n`;
+  assessment += `• Diet Plan: ${data.diet_plan || 'Not specified'}\n`;
+  assessment += `• Cooking Frequency: ${data.cooking_frequency || 'Not specified'}\n`;
+  assessment += `• Grocery Budget: ${data.weekly_shopping_budget || 'Not specified'}\n`;
+  assessment += `• Favorite Cuisines: ${data.favorite_cuisines || 'Not specified'}\n`;
+  assessment += `• Dietary Restrictions: ${data.dietary_restrictions || 'None reported'}\n\n`;
   
-  // Add raw data for complete record
-  if (data.raw_assessment_data) {
-    noteContent += `\nRAW ASSESSMENT DATA:\n${data.raw_assessment_data}\n`;
-  }
+  assessment += `EXERCISE & ACTIVITY:\n`;
+  assessment += `• Exercise Days/Week: ${data.activity_days_per_week || 'Not specified'}\n`;
+  assessment += `• Workout Duration: ${data.activity_minutes_per_session || 'Not specified'} minutes\n`;
+  assessment += `• Sitting Hours/Day: ${data.sitting_hours_per_day || 'Not specified'}\n`;
+  assessment += `• Exercise Types: ${data.exercise_routine || 'Not specified'}\n`;
+  assessment += `• Wearable Device: ${data.wearable_device || 'None'}\n\n`;
   
-  return noteContent;
+  assessment += `SLEEP QUALITY ASSESSMENT:\n`;
+  assessment += `• Sleep Hours: ${data.sleep_hours || 'Not provided'} hours\n`;
+  assessment += `• Trouble Falling Asleep: ${data.trouble_falling_asleep || 'Not rated'}/6\n`;
+  assessment += `• Wake Up Multiple Times: ${data.wake_up_several_times || 'Not rated'}/6\n`;
+  assessment += `• Trouble Staying Asleep: ${data.trouble_staying_asleep || 'Not rated'}/6\n`;
+  assessment += `• Wake Up Tired: ${data.wake_up_tired || 'Not rated'}/6\n\n`;
+  
+  assessment += `================================================================\n`;
+  assessment += `Assessment completed via comprehensive online questionnaire.\n`;
+  assessment += `Completion Date: ${data.completion_date || new Date().toISOString()}\n`;
+  assessment += `Data processing consent: Given\n`;
+  assessment += `Lead Source: Comprehensive Menopause Assessment Form\n`;
+  
+  return assessment;
 }
