@@ -59,13 +59,13 @@ async function submitToGHLForm(data) {
     // Format the complete assessment as text for the form
     const completeAssessment = formatCompleteAssessment(data);
 
-    // Create form data for GHL form submission
+    // Create form data for GHL form submission using the correct field names
     const formData = new URLSearchParams({
       'first_name': data.first_name || '',
       'last_name': data.last_name || '',
       'email': data.email,
       'phone': data.phone,
-      'assessment_data': completeAssessment
+      'complete_asessment': completeAssessment
     });
 
     console.log('Submitting to GHL form:', GHL_FORM_URL);
