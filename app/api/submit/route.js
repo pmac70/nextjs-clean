@@ -1,163 +1,111 @@
-import { NextResponse } from "next/server";
-export const runtime = "nodejs";
+import { NextResponse } from 'next/server';
 
-const GHL_API_KEY = process.env.GHL_API_KEY;
-const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
-const BASE = "https://rest.gohighlevel.com/v1";
-
-/** Unified GHL fetch helper */
-async function ghl(path, init = {}) {
-  const headers = {
-    Authorization: `Bearer ${GHL_API_KEY}`,
-    Accept: "application/json",
-    ...(init.body ? { "Content-Type": "application/json" } : {}),
-    ...(init.headers || {}),
-  };
-  const res = await fetch(`${BASE}${path}`, { ...init, headers });
-  const text = await res.text();
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    data = { raw: text };
-  }
-  return { ok: res.ok, status: res.status, data, raw: text };
-}
-
-/** Health check */
-export async function GET() {
-  return NextResponse.json({
-    ok: true,
-    hasKey: !!GHL_API_KEY,
-    hasLocation: !!GHL_LOCATION_ID,
-  });
-}
-
-/** Helpers to format a single big Note */
-function toMarkdownTable(obj) {
-  const lines = ["| Field | Value |", "|------:|:------|"];
-  for (const [k, v] of Object.entries(obj || {})) {
-    const val =
-      v === undefined || v === null || v === "" ? "_" : String(v).replace(/\n/g, "<br/>");
-    lines.push(`| \`${k}\` | ${val} |`);
-  }
-  return lines.join("\n");
-}
-function formatNote(all) {
-  const header = [
-    "📌 **Questionnaire Submission**",
-    "",
-    `**Name:** ${[all.firstName, all.lastName].filter(Boolean).join(" ")}`,
-    all.email ? `**Email:** ${all.email}` : "",
-    all.phone ? `**Phone:** ${all.phone}` : "",
-    "",
-    "### Full Answers",
-    "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-  return `${header}\n${toMarkdownTable(all)}`;
-}
-
-/** Only keep keys with real values (don’t send blanks on update) */
-function pickNonEmpty(obj, allowedKeys) {
-  const out = {};
-  for (const k of allowedKeys) {
-    const v = obj[k];
-    if (v !== undefined && v !== null && String(v).trim() !== "") {
-      out[k] = v;
-    }
-  }
-  return out;
-}
-
-/** Try to find an existing contact by email/phone */
-async function findContactId({ email, phone }) {
-  const params = new URLSearchParams();
-  if (email) params.append("email", email);
-  if (phone) params.append("phone", phone);
-  if (!params.toString()) return null;
-
-  const r = await ghl(`/contacts/lookup?${params.toString()}`, { method: "GET" });
-  if (!r.ok) {
-    console.error("Lookup failed", r.status, r.raw);
-    return null;
-  }
-  return r.data?.contact?.id || r.data?.id || r.data?.contacts?.[0]?.id || null;
-}
+const GHL_API_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2NhdGlvbl9pZCI6IjNwdTFuRFdPc0sxRkR1TjFSb1NiIiwiY29tcGFueV9pZCI6IlNXREdHNGxHZjgydzVXVTUwVmFnIiwidmVyc2lvbiI6MSwiaWF0IjoxNzA1MTQwNjkyNjU2LCJzdWIiOiJ1c2VyX2lkIn0.hlmsZFdLcyt2LOYw5-8o4drrW6_kELif_1xqrttsaTc';
+const GHL_LOCATION_ID = '3pu1nDWOsK1FDuN1RoSb';
 
 export async function POST(request) {
-  try {
-    const payload = await request.json();
+  // Enable CORS for GoHighLevel origin
+  const origin = request.headers.get('origin');
+  const allowedOrigins = ['https://app.gohighlevel.com'];
+  const responseHeaders = {
+    'Access-Control-Allow-Origin': allowedOrigins.includes(origin) ? origin : 'https://app.gohighlevel.com',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  };
 
-    // 1) Lookup by email/phone (can also add externalId if you capture FB lead id)
-    const existingId = await findContactId({
-      email: payload.email,
-      phone: payload.phone,
-    });
-
-    // Allowed top-level contact fields you want to maintain
-    const allowed = ["firstName", "lastName", "email", "phone"];
-    const nonEmpty = pickNonEmpty(payload, allowed);
-
-    let contactId;
-
-    if (existingId) {
-      // 2a) UPDATE only with the non-empty fields we received
-      if (Object.keys(nonEmpty).length > 0) {
-        const upd = await ghl(`/contacts/${existingId}`, {
-          method: "PUT",
-          body: JSON.stringify(nonEmpty),
-        });
-        if (!upd.ok) {
-          console.error("Update contact error", upd.status, upd.raw);
-          return NextResponse.json(
-            { success: false, step: "update", status: upd.status, error: upd.data },
-            { status: 502 }
-          );
-        }
-      }
-      contactId = existingId;
-    } else {
-      // 2b) CREATE (require locationId)
-      const crt = await ghl(`/contacts/`, {
-        method: "POST",
-        body: JSON.stringify({
-          locationId: GHL_LOCATION_ID,
-          ...nonEmpty,
-        }),
-      });
-      if (!crt.ok || !crt.data?.id) {
-        console.error("Create contact error", crt.status, crt.raw);
-        return NextResponse.json(
-          { success: false, step: "create", status: crt.status, error: crt.data },
-          { status: 502 }
-        );
-      }
-      contactId = crt.data.id;
-    }
-
-    // 3) Add a single big Note with ALL Q&A
-    const note = await ghl(`/contacts/${contactId}/notes/`, {
-      method: "POST",
-      body: JSON.stringify({ body: formatNote(payload) }),
-    });
-    if (!note.ok) {
-      console.error("Note error", note.status, note.raw);
-      return NextResponse.json({
-        success: true,
-        contactId,
-        noteWarning: note.data,
-        noteStatus: note.status,
-      });
-    }
-
-    // (Optional) Tag the contact so you can build automations off it:
-    // await ghl(`/contacts/${contactId}/tags/`, { method: "POST", body: JSON.stringify({ tags: ["Questionnaire Submitted"] }) });
-
-    return NextResponse.json({ success: true, contactId });
-  } catch (err) {
-    console.error("API error:", err);
-    return NextResponse.json({ success: false, error: String(err) }, { status: 500 });
+  if (request.method === 'OPTIONS') {
+    return new NextResponse(null, { status: 204, headers: responseHeaders });
   }
+
+  try {
+    const ghlData = await request.json();
+
+    // Step 1: Create contact
+    const contactResponse = await fetch(`https://services.leadconnector.com/locations/${GHL_LOCATION_ID}/contacts/`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GHL_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Version': '2021-07-28'
+      },
+      body: JSON.stringify({
+        firstName: ghlData.first_name,
+        lastName: ghlData.last_name,
+        email: ghlData.email,
+        phone: ghlData.phone,
+        source: ghlData.lead_source,
+        tags: ghlData.tags
+      })
+    });
+    if (!contactResponse.ok) {
+      throw new Error(`Contact creation failed: ${contactResponse.statusText}`);
+    }
+    const contactData = await contactResponse.json();
+    const contactId = contactData.contact ? contactData.contact.id : contactData.id;
+
+    // Step 2: Add detailed note
+    const noteContent = formatDetailedNote(ghlData);
+    const noteResponse = await fetch(`https://services.leadconnector.com/locations/${GHL_LOCATION_ID}/contacts/${contactId}/notes/`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GHL_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Version': '2021-07-28'
+      },
+      body: JSON.stringify({
+        body: noteContent,
+        type: 'NOTE'
+      })
+    });
+    if (!noteResponse.ok) {
+      throw new Error(`Note creation failed: ${noteResponse.statusText}`);
+    }
+
+    return new NextResponse(JSON.stringify({ message: 'Data successfully sent to GoHighLevel' }), {
+      status: 200,
+      headers: responseHeaders
+    });
+  } catch (error) {
+    console.error('Server error:', error);
+    return new NextResponse(JSON.stringify({ error: 'Failed to process data' }), {
+      status: 500,
+      headers: responseHeaders
+    });
+  }
+}
+
+function formatDetailedNote(data) {
+  let noteContent = `COMPREHENSIVE MENOPAUSE HEALTH ASSESSMENT - ${new Date().toLocaleDateString()}\n================================================================\n`;
+  noteContent += `CLIENT: ${data.first_name || ''} ${data.last_name || ''}\n`;
+  noteContent += `EMAIL: ${data.email || 'Not provided'}\n`;
+  noteContent += `PHONE: ${data.phone || 'Not provided'}\n`;
+  noteContent += `ASSESSMENT SUMMARY:\n`;
+  noteContent += `• Total Symptoms Reported: ${data.total_symptoms || 0}\n`;
+  noteContent += `• High Priority Symptoms (7-10): ${data.high_priority_symptoms || 0}\n`;
+  noteContent += `HIGH PRIORITY SYMPTOMS (Severity 7+):\n${data.high_priority_symptoms > 0 ? data.symptom_severities.split(', ').filter(s => parseInt(s.split(': ')[1]) >= 7).map(s => `• ${s}`).join('\n') : '• None reported'}\n`;
+  noteContent += `PHYSICAL PROFILE:\n`;
+  noteContent += `• Measurement System: ${data.measurement_system || 'Not specified'}\n`;
+  noteContent += `• Weight: ${data.weight || 'Not provided'}\n`;
+  noteContent += `• Height: ${data.height || 'Not provided'}\n`;
+  noteContent += `• Waist: ${data.waist_circumference || 'Not provided'}\n`;
+  noteContent += `LIFESTYLE FACTORS:\n`;
+  noteContent += `• Stress Level: ${data.stress_level || 'Not rated'}/6\n`;
+  noteContent += `• Sleep Hours: ${data.sleep_hours || 'Not provided'}\n`;
+  noteContent += `• Exercise Days/Week: ${data.activity_days_per_week || 'Not provided'}\n`;
+  noteContent += `• Diet Type: ${data.diet_type || 'Not specified'}\n`;
+  noteContent += `MEDICAL HISTORY:\n`;
+  noteContent += `• Medical Conditions: ${data.diagnosed_conditions || 'None reported'}\n`;
+  noteContent += `• Hormone Therapy: ${data.taking_hrt || 'Not specified'}\n`;
+  noteContent += `• Last Period: ${data.had_period_last_12_months || 'Not specified'}\n`;
+  noteContent += `• Supplements: ${data.taking_supplements || 'None reported'}\n`;
+  noteContent += `WELLNESS GOALS:\n`;
+  noteContent += `• Self-Care Priority: ${data.prioritize_self_care || 'Not specified'}\n`;
+  noteContent += `• Journey Stage: ${data.menopause_journey_stage || 'Not specified'}\n`;
+  noteContent += `• Focus Areas: ${data.paths_to_health || 'Not specified'}\n`;
+  noteContent += `• Options Taken: ${data.self_care_options_taken || 'Not specified'}\n`;
+  noteContent += `ALL SYMPTOMS WITH SEVERITY:\n${data.experienced_symptoms ? data.symptom_severities.split(', ').map(s => `• ${s}`).join('\n') : '• No symptoms reported'}\n`;
+  noteContent += `================================================================\n`;
+  noteContent += `Assessment completed via online questionnaire.\n`;
+  noteContent += `Data consent provided: ${data.raw_assessment_data && JSON.parse(data.raw_assessment_data).data_consent ? 'Yes' : 'No'}\n`;
+  return noteContent;
 }
